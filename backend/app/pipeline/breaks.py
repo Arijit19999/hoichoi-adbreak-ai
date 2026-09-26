@@ -160,26 +160,21 @@ def position_problem(c: dict, duration: float, rules: PacingRules) -> str | None
     return None
 
 
+def selectable(c: dict, duration: float, rules: PacingRules) -> bool:
+    return not c["rejected"] and c.get("safe_brands", 1) > 0 and position_problem(c, duration, rules) is None
+
+
 def select(cands: list[dict], duration: float, rules: PacingRules) -> list[dict]:
-    """Max-total-value subset under count / gap / position rules (small DP over candidates).
+    """Max-total-value subset under count / gap / position rules (small DP over candidates). Pure.
 
     Value is `selection_score` (break quality + best safe brand fit) when present, else `score`.
     """
-    eligible = []
-    for c in cands:
-        if c["rejected"] or c.get("safe_brands", 1) == 0:
-            continue
-        problem = position_problem(c, duration, rules)
-        if problem:
-            c["rejected"].append(problem)
-        else:
-            eligible.append(c)
-    eligible.sort(key=lambda c: c["time"])
+    eligible = sorted((c for c in cands if selectable(c, duration, rules)), key=lambda c: c["time"])
     limit = rules.max_breaks(duration)
     if not eligible or limit == 0:
         return []
 
-    # best[i][k] = (total score, chosen indices) using k breaks with the last one at candidate i
+    # best[i][k] = (total value, chosen indices) using k breaks with the last one at candidate i
     n = len(eligible)
     best: list[dict[int, tuple[float, list[int]]]] = [dict() for _ in range(n)]
     value = [c.get("selection_score", c["score"]) for c in eligible]
@@ -192,9 +187,4 @@ def select(cands: list[dict], duration: float, rules: PacingRules) -> list[dict]
                 if k + 1 <= limit and total + value[i] > best[i].get(k + 1, (-1, []))[0]:
                     best[i][k + 1] = (total + value[i], chosen + [i])
     _, chosen = max((entry for b in best for entry in b.values()), key=lambda e: e[0])
-
-    picked = {id(eligible[i]) for i in chosen}
-    for c in eligible:
-        if id(c) not in picked:
-            c["rejected"].append("pacing: a higher-scoring combination of breaks was chosen")
     return [eligible[i] for i in chosen]

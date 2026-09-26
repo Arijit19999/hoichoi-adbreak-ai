@@ -10,6 +10,55 @@ log = logging.getLogger("plan")
 AUDIT_TOP_N = 3            # brands tried per break before the break is dropped
 DIVERSITY_MARGIN = 0.10    # accept the runner-up brand this close to avoid back-to-back repeats
 FIT_IN_SELECTION = 0.30    # weight of the best safe brand's fit when choosing between break points
+MAX_REPLANS = 6
+
+
+def _assign(chosen: list[dict], scenes: list[dict], by_id: dict[str, dict], rules: breaks.PacingRules,
+            duration: float, audit_cache: dict[tuple[float, str], dict]) -> tuple[list[dict], list[dict]]:
+    """Brand + creative for each chosen break, each placement independently audited.
+
+    Returns (placed, dropped). Audits are cached so a re-selection never re-asks the same question.
+    """
+    budget_left = rules.max_ad_load_pct / 100 * duration
+    previous_brand = None
+    placed, dropped = [], []
+    for n, c in enumerate(chosen):
+        c.pop("placement", None)
+        c["audits"] = []
+        c["notes"] = [note for note in c["notes"] if not note.startswith("runner-up chosen")]
+        before, after = scenes[c["scene_before"]], scenes[c["scene_after"]]
+        ranking = c["brand_ranking"]
+
+        order = [r["brand_id"] for r in ranking]
+        if len(ranking) > 1 and order[0] == previous_brand and ranking[1]["fit"] >= ranking[0]["fit"] - DIVERSITY_MARGIN:
+            order[0], order[1] = order[1], order[0]
+            c["notes"].append(f"runner-up chosen to avoid repeating {previous_brand} back to back")
+
+        per_break_budget = budget_left / (len(chosen) - n)
+        for brand_id in order[:AUDIT_TOP_N]:
+            brand = by_id[brand_id]
+            creative = matching.pick_creative(brand, per_break_budget) or matching.pick_creative(brand, budget_left)
+            if creative is None:
+                c["notes"].append(f"{brand_id}: no creative fits the remaining ad-load budget ({budget_left:.0f}s)")
+                continue
+            key = (c["time"], brand_id)
+            if key not in audit_cache:
+                result, audit_model = matching.audit(before, after, brand)
+                audit_cache[key] = {"brand_id": brand_id, "model": audit_model, **result.model_dump()}
+            c["audits"].append(audit_cache[key])
+            if audit_cache[key]["verdict"] != "safe":
+                continue
+            fit = next(r for r in ranking if r["brand_id"] == brand_id)
+            c["placement"] = {"brand_id": brand_id, "display_name": brand["display_name"],
+                              "category": brand["category"], "creative": creative,
+                              "fit": fit["fit"], "reason": fit["reason"]}
+            budget_left -= creative["duration_sec"]
+            previous_brand = brand_id
+            placed.append(c)
+            break
+        else:
+            dropped.append(c)
+    return placed, dropped
 
 
 def build_plan(work: Path, scenes_doc: dict, speech_doc: dict, duration: float, catalogue: list[dict],
@@ -38,43 +87,26 @@ def build_plan(work: Path, scenes_doc: dict, speech_doc: dict, duration: float, 
         c["best_fit"] = c["brand_ranking"][0]["fit"]
         c["selection_score"] = round(c["score"] + FIT_IN_SELECTION * c["best_fit"], 3)
 
-    chosen = breaks.select(cands, duration, rules)
-
-    budget_left = rules.max_ad_load_pct / 100 * duration
-    previous_brand = None
-    placed = []
-    for n, c in enumerate(chosen):
-        before, after = scenes[c["scene_before"]], scenes[c["scene_after"]]
-        ranking = c["brand_ranking"]
-
-        order = [r["brand_id"] for r in ranking]
-        if len(ranking) > 1 and order[0] == previous_brand and ranking[1]["fit"] >= ranking[0]["fit"] - DIVERSITY_MARGIN:
-            order[0], order[1] = order[1], order[0]
-            c["notes"].append(f"runner-up chosen to avoid repeating {previous_brand} back to back")
-
-        per_break_budget = budget_left / (len(chosen) - n)
-        c["audits"] = []
-        for brand_id in order[:AUDIT_TOP_N]:
-            brand = by_id[brand_id]
-            creative = matching.pick_creative(brand, per_break_budget) or matching.pick_creative(brand, budget_left)
-            if creative is None:
-                c["notes"].append(f"{brand_id}: no creative fits the remaining ad-load budget ({budget_left:.0f}s)")
-                continue
-            result, audit_model = matching.audit(before, after, brand)
-            c["audits"].append({"brand_id": brand_id, "model": audit_model, **result.model_dump()})
-            if result.verdict != "safe":
-                continue
-            fit = next(r for r in ranking if r["brand_id"] == brand_id)
-            c["placement"] = {"brand_id": brand_id, "display_name": brand["display_name"],
-                              "category": brand["category"], "creative": creative,
-                              "fit": fit["fit"], "reason": fit["reason"]}
-            budget_left -= creative["duration_sec"]
-            previous_brand = brand_id
+    # Select, assign brands, audit. An audit failure removes that break and the selection is re-run,
+    # so another eligible break can take its place.
+    audit_cache: dict[tuple[float, str], dict] = {}
+    placed: list[dict] = []
+    for _ in range(MAX_REPLANS):
+        for c in cands:
+            c.pop("placement", None)
+        chosen = breaks.select(cands, duration, rules)
+        placed, dropped = _assign(chosen, scenes, by_id, rules, duration, audit_cache)
+        if not dropped:
             break
-        else:
+        for c in dropped:
             c["rejected"].append("no safe brand passed the independent audit within the ad-load budget")
+
+    placed_ids = {id(c) for c in placed}
+    for c in cands:
+        if c["rejected"] or id(c) in placed_ids:
             continue
-        placed.append(c)
+        problem = breaks.position_problem(c, duration, rules)
+        c["rejected"].append(problem or "pacing: a higher-scoring combination of breaks was chosen")
 
     for i, c in enumerate(placed):
         c["placement"]["id"] = f"midroll-{i + 1}"
