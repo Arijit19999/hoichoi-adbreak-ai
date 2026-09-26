@@ -31,8 +31,13 @@ class ExtraVerdict(BaseModel):
     reason: str
 
 
-class ExtraVerdicts(BaseModel):
+class SceneVerdicts(BaseModel):
+    scene: int
     verdicts: list[ExtraVerdict]
+
+
+class ExtraVerdicts(BaseModel):
+    scenes: list[SceneVerdicts]
 
 
 def _scene_brief(scene: dict) -> str:
@@ -48,28 +53,34 @@ def _scene_brief(scene: dict) -> str:
 def fill_unchecked_contexts(scenes: list[dict], brands: list[dict], scene_ids: set[int]) -> None:
     """Add verdicts for negative contexts the video analysis did not cover (unseen brands)."""
     wanted = {c for b in brands for c in b["negative_contexts"]}
+    todo: dict[int, list[str]] = {}
     for scene in scenes:
-        if scene["index"] not in scene_ids:
-            continue
-        known = {c["context"] for c in scene.get("negative_context_checks", [])}
-        missing = sorted(wanted - known)
-        if not missing:
-            continue
-        try:
-            result, model = llm.text_json(
-                f"Scene description:\n{_scene_brief(scene)}\n\nContexts to check: {missing}",
-                ExtraVerdicts,
-                system="You check TV scenes for contexts an advertiser must avoid. For each context give "
-                       "'present' if the description shows or clearly implies it, 'possible' if there is any "
-                       "hint or you cannot rule it out, 'absent' only when clearly not there.",
-            )
-            got = {v.context.lower().strip(): v for v in result.verdicts}
-        except Exception as e:  # noqa: BLE001 - any failure must fall back to the cautious verdict
-            log.warning("context check failed for scene %s: %s", scene["index"], e)
-            got, model = {}, "none"
+        if scene["index"] in scene_ids:
+            known = {c["context"] for c in scene.get("negative_context_checks", [])}
+            if missing := sorted(wanted - known):
+                todo[scene["index"]] = missing
+    if not todo:
+        return
+
+    # One batched request for all scenes (free tiers limit tokens per minute, not just requests).
+    got: dict[tuple[int, str], ExtraVerdict] = {}
+    model = "none"
+    prompt = "\n\n".join(f"### Scene {i}\n{_scene_brief(scenes[i])}\nContexts to check: {ctx}" for i, ctx in todo.items())
+    try:
+        result, model = llm.text_json(
+            prompt, ExtraVerdicts,
+            system="You check TV scenes for contexts an advertiser must avoid. For every scene and every listed "
+                   "context give 'present' if the description shows or clearly implies it, 'possible' if there "
+                   "is any hint or you cannot rule it out, 'absent' only when clearly not there.",
+        )
+        got = {(s.scene, v.context.lower().strip()): v for s in result.scenes for v in s.verdicts}
+    except Exception as e:  # noqa: BLE001 - any failure must fall back to the cautious verdict
+        log.warning("context check failed: %s", e)
+
+    for index, missing in todo.items():
         for context in missing:
-            v = got.get(context)
-            scene.setdefault("negative_context_checks", []).append({
+            v = got.get((index, context))
+            scenes[index].setdefault("negative_context_checks", []).append({
                 "context": context,
                 "verdict": v.verdict if v else "possible",
                 "evidence": f"text check ({model}): {v.reason}" if v else "could not be checked",

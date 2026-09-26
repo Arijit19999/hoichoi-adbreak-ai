@@ -136,7 +136,7 @@ def groq_client():
     key = get_settings().groq_api_key
     if not key:
         raise RuntimeError("GROQ_API_KEY is not set")
-    return Groq(api_key=key, max_retries=0)
+    return Groq(api_key=key, max_retries=0, timeout=30.0)
 
 
 def _groq_reasoning(model: str) -> dict | None:
