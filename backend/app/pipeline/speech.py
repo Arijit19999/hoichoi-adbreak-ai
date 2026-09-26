@@ -80,6 +80,24 @@ def detect_speech(wav_path: Path) -> dict:
     }
 
 
+def wav_clip(wav_path: Path, start: float, end: float) -> bytes:
+    """[start, end) of the WAV as a standalone WAV file (for short ASR checks)."""
+    import io
+
+    with wave.open(str(wav_path), "rb") as src:
+        sr = src.getframerate()
+        begin = max(0, int(start * sr))
+        src.setpos(min(begin, src.getnframes()))
+        frames = src.readframes(max(0, int(end * sr) - begin))
+    buf = io.BytesIO()
+    with wave.open(buf, "wb") as dst:
+        dst.setnchannels(1)
+        dst.setsampwidth(2)
+        dst.setframerate(sr)
+        dst.writeframes(frames)
+    return buf.getvalue()
+
+
 def gap_at(gaps: list[list[float]], t: float) -> tuple[float, float] | None:
     """The silence gap containing time t, if any."""
     for start, end in gaps:

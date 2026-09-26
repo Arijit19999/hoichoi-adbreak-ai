@@ -15,9 +15,9 @@ import time
 from collections.abc import Callable
 from pathlib import Path
 
-from .. import brands, llm
+from .. import ads, brands, llm
 from ..config import get_settings
-from . import media, scenes, speech
+from . import breaks, media, plan, scenes, speech, vmap
 
 Progress = Callable[[str, str], None]
 
@@ -59,7 +59,8 @@ def ingest(src: Path, progress: Progress = _print_progress) -> Path:
     return work
 
 
-def run_pipeline(src: Path, force: bool = False, progress: Progress = _print_progress) -> Path:
+def run_pipeline(src: Path, force: bool = False, replan: bool = False,
+                 progress: Progress = _print_progress) -> Path:
     if force:
         work = get_settings().outputs / media.content_hash(src)[:16]
         shutil.rmtree(work, ignore_errors=True)
@@ -80,31 +81,52 @@ def run_pipeline(src: Path, force: bool = False, progress: Progress = _print_pro
         progress("upload", "uploading video to Gemini")
         remote = llm.upload_video(work / "video.mp4", work / "gemini_file.json")
 
-        raw_path = work / "scenes_raw.json"
-        if not raw_path.exists():
-            progress("scenes", "segmenting into scenes")
-            write_json(raw_path, scenes.segment(remote, work / "video.mp4", info))
-        raw = read_json(raw_path)
-        progress("scenes", f"{len(raw['scenes'])} scenes from {raw['proposals']} proposals; analysing each scene")
-
+        progress("scenes", "segmenting and analysing scenes")
+        started = time.perf_counter()
         negative, target = brands.vocabulary(brands.load_catalogue())
-        analysed = scenes.understand(remote, raw["scenes"], negative, target)
-        write_json(scenes_path, {"negative_vocabulary": negative, "target_vocabulary": target, "scenes": analysed})
+        result = scenes.analyse(remote, work / "video.mp4", info, negative, target)
+        write_json(scenes_path, result)
+        models = sorted({m for s in result["scenes"] for m in s.get("models", [])})
+        progress("scenes", f"{len(result['scenes'])} scenes from {len(result['windows'])} windows "
+                           f"via {models} ({time.perf_counter() - started:.0f}s)")
+
+    if replan or not (work / "breaks.json").exists():
+        make_plan(work, progress)
 
     progress("done", str(work))
     return work
+
+
+def make_plan(work: Path, progress: Progress = _print_progress, rules: breaks.PacingRules | None = None,
+              catalogue: list[dict] | None = None, use_asr: bool = True) -> dict:
+    """Break plan + manifest from cached analysis. Re-run alone when the catalogue or rules change."""
+    catalogue = catalogue if catalogue is not None else brands.load_catalogue()
+    rules = rules or breaks.PacingRules()
+    progress("plan", "scoring break candidates, matching brands, auditing")
+    started = time.perf_counter()
+    ads.ensure_creatives(catalogue)
+    result, debug = plan.build_plan(work, read_json(work / "scenes.json"), read_json(work / "speech.json"),
+                                    read_json(work / "meta.json")["duration"], catalogue, rules, use_asr=use_asr)
+    write_json(work / "breaks.json", result)
+    write_json(work / "debug.json", debug)
+    (work / "manifest.vmap.xml").write_bytes(vmap.build_vmap(result, get_settings().public_base_url))
+    placed = ", ".join(f"{b['id']}@{b['time']:.1f}s={b['brand_id']}" for b in result["breaks"]) or "none"
+    progress("plan", f"{len(result['breaks'])} breaks ({placed}), ad load {result['ad_load_pct']}% "
+                     f"({time.perf_counter() - started:.0f}s)")
+    return result
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Run the ad-break pipeline on one video")
     parser.add_argument("video", type=Path)
     parser.add_argument("--force", action="store_true", help="discard cached results for this video")
+    parser.add_argument("--replan", action="store_true", help="recompute breaks / brands / manifest only")
     args = parser.parse_args()
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(levelname)s %(message)s",
                         datefmt="%H:%M:%S")
     logging.getLogger("httpx").setLevel(logging.WARNING)
     logging.getLogger("google_genai").setLevel(logging.WARNING)
-    run_pipeline(args.video.resolve(), force=args.force)
+    run_pipeline(args.video.resolve(), force=args.force, replan=args.replan)
 
 
 if __name__ == "__main__":
