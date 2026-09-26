@@ -1,5 +1,6 @@
 import json
 import logging
+import re
 import shutil
 import uuid
 from pathlib import Path
@@ -85,15 +86,22 @@ async def upload_video(file: UploadFile):
     return _process(dst, file.filename or dst.name, cleanup=True).to_dict()
 
 
-def _drive_file_name(url: str) -> str | None:
-    """Best-effort original file name of a public Drive file (from its page title)."""
-    try:
-        page = httpx.get(url, follow_redirects=True, timeout=15).text
-        start = page.index("<title>") + 7
-        title = page[start:page.index("</title>", start)].rsplit(" - Google Drive", 1)[0].strip()
-        return title or None
-    except (httpx.HTTPError, ValueError):
-        return None
+_DRIVE_ID = re.compile(r"(?:/d/|[?&]id=)([A-Za-z0-9_-]{20,})")
+
+
+def _download_drive(url: str, dst: Path) -> str | None:
+    """Download a public Google Drive file; returns its original file name."""
+    import gdown
+
+    match = _DRIVE_ID.search(url)
+    if match is None:
+        raise ValueError("no file id in this Google Drive link (folder links are not supported: share the file)")
+    file_id = match.group(1)
+    info = gdown.download(id=file_id, quiet=True, skip_download=True)
+    gdown.download(id=file_id, output=str(dst), quiet=True, retries=2)
+    if not dst.exists() or dst.stat().st_size == 0:
+        raise RuntimeError("Google Drive download failed (is the file shared with 'anyone with the link'?)")
+    return getattr(info, "path", None)
 
 
 class UrlIn(BaseModel):
@@ -105,26 +113,21 @@ def video_from_url(body: UrlIn):
     UPLOADS.mkdir(parents=True, exist_ok=True)
     dst = UPLOADS / f"{uuid.uuid4().hex}.mp4"
 
-    original_name: dict[str, str | None] = {"name": None}
-
     def work(job: jobs.Job) -> str:
         progress = jobs.progress_for(job)
         progress("download", body.url)
         try:
             if "drive.google.com" in body.url:
-                import gdown
-                if gdown.download(body.url, str(dst), quiet=True, fuzzy=True) is None:
-                    raise RuntimeError("Google Drive download failed (is the file shared publicly?)")
-                original_name["name"] = _drive_file_name(body.url)
+                name = _download_drive(body.url, dst)
             else:
                 with httpx.stream("GET", body.url, follow_redirects=True, timeout=60) as r:
                     r.raise_for_status()
                     with dst.open("wb") as out:
                         for chunk in r.iter_bytes(4 * 1024 * 1024):
                             out.write(chunk)
-            progress("download", f"{dst.stat().st_size / 1e6:.0f} MB")
-            name = Path(body.url.split("?")[0]).name if "drive.google.com" not in body.url else None
-            return run.run_pipeline(dst, progress=progress, source_name=name or original_name.get("name")).name
+                name = Path(body.url.split("?")[0]).name or None
+            progress("download", f"{name or 'video'}: {dst.stat().st_size / 1e6:.0f} MB")
+            return run.run_pipeline(dst, progress=progress, source_name=name).name
         finally:
             dst.unlink(missing_ok=True)
 
