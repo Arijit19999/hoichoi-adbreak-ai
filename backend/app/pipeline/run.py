@@ -86,8 +86,15 @@ def run_pipeline(src: Path, force: bool = False, replan: bool = False, rebuild_s
         replan = True
     if not scenes_path.exists():
         info = media.probe(work / "video.mp4")
-        progress("upload", "uploading video to Gemini")
-        remote = llm.upload_video(work / "video.mp4", work / "gemini_file.json")
+        upload = work / "video.mp4"
+        proxy_height = get_settings().gemini_proxy_height
+        if proxy_height > 0:
+            upload = work / "analysis_proxy.mp4"
+            if not upload.exists():
+                progress("upload", f"making {proxy_height}p analysis proxy")
+                media.make_analysis_proxy(work / "video.mp4", upload, proxy_height)
+        progress("upload", f"uploading {upload.stat().st_size / 1e6:.0f} MB to Gemini")
+        remote = llm.upload_video(upload, work / "gemini_file.json")
 
         progress("scenes", "segmenting and analysing scenes")
         started = time.perf_counter()

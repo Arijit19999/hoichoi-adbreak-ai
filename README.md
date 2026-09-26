@@ -100,6 +100,20 @@ cd ../frontend && npm install && npm run dev            # dev UI on :5173 (proxi
 
 Requirements: Python 3.12 + uv, Node 22, ffmpeg on PATH.
 
+### Self-check against the judging rules
+
+```powershell
+cd backend
+uv run python -m app.verify        # every processed video; exit code 1 on any failure
+```
+
+No model calls: for every placed break it re-measures the shot change from the frames, checks nobody is speaking
+at the cut, re-applies the brand-safety rules, checks pacing / ad load, parses the VMAP against the plan, and checks
+every creative file's length.
+
+On a slow uplink, set `GEMINI_PROXY_HEIGHT=360` to upload a small same-timeline copy to Gemini instead of the
+original (4-5x smaller).
+
 ## Deploy
 
 `render.yaml` + `Dockerfile` (single container: React build served by FastAPI). Set `GEMINI_API_KEY` and

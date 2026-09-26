@@ -126,3 +126,12 @@ def extract_jpeg(src: Path, t: float, dst: Path, width: int = 480) -> None:
         _bin("ffmpeg"), "-y", "-v", "error", "-ss", f"{max(0.0, t):.3f}", "-i", str(src),
         "-frames:v", "1", "-vf", f"scale={width}:-2", "-q:v", "4", str(dst),
     ])
+
+
+def make_analysis_proxy(src: Path, dst: Path, height: int) -> None:
+    """Small same-timeline copy for upload to the scene model (it samples ~1 fps at low resolution)."""
+    _run([
+        _bin("ffmpeg"), "-y", "-v", "error", "-i", str(src),
+        "-vf", f"scale=-2:{height},fps=5", "-c:v", "libx264", "-preset", "veryfast", "-crf", "30",
+        "-c:a", "aac", "-b:a", "48k", "-ac", "1", "-movflags", "+faststart", str(dst),
+    ])

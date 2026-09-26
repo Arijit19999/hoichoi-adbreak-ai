@@ -19,6 +19,9 @@ class Settings(BaseSettings):
     anthropic_api_key: str = ""
     output_dir: Path = Path("outputs")
     public_base_url: str = "http://localhost:8000/"
+    # >0: upload a small proxy (this height, 5 fps) to Gemini instead of the original.
+    # Useful on slow uplinks; leave 0 on a small server (transcoding is CPU-heavy).
+    gemini_proxy_height: int = 0
     brands_path: Path = Path("data/brands/brands.json")
 
     def resolve(self, p: Path) -> Path:
