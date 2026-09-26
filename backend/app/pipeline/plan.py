@@ -34,7 +34,7 @@ def build_plan(work: Path, scenes_doc: dict, speech_doc: dict, duration: float, 
         if c["rejected"] or breaks.position_problem(c, duration, rules):
             continue
         safe = [by_id[b] for b, reasons in c["brand_safety"].items() if not reasons]
-        c["brand_ranking"], c["fit_model"] = matching.score_fit(scenes[c["scene_before"]], safe)
+        c["brand_ranking"], c["fit_model"] = matching.score_fit(scenes[c["scene_before"]], scenes[c["scene_after"]], safe)
         c["best_fit"] = c["brand_ranking"][0]["fit"]
         c["selection_score"] = round(c["score"] + FIT_IN_SELECTION * c["best_fit"], 3)
 
@@ -87,7 +87,7 @@ def build_plan(work: Path, scenes_doc: dict, speech_doc: dict, duration: float, 
         "breaks": [
             {"id": f"midroll-{i + 1}", "time": round(c["time"], 3), "score": c["score"],
              "selection_score": c.get("selection_score"),
-             "transition": c.get("transition"), "scene_before": c["scene_before"], "scene_after": c["scene_after"],
+             "kind": c["kind"], "transition": c.get("transition"), "scene_before": c["scene_before"], "scene_after": c["scene_after"],
              **c["placement"]}
             for i, c in enumerate(placed)
         ],
@@ -97,7 +97,7 @@ def build_plan(work: Path, scenes_doc: dict, speech_doc: dict, duration: float, 
         "scoring_weights": breaks.WEIGHTS,
         "scenes": [
             {k: s.get(k) for k in ("index", "start", "end", "summary", "dominant_activity", "mood", "ending",
-                                   "interruptibility", "sensitive_events", "target_contexts_present", "models")}
+                                   "interruptibility", "sensitive_events", "target_contexts_present", "models", "beats")}
             | {"flagged_contexts": [c for c in s.get("negative_context_checks", []) if c["verdict"] != "absent"],
                "boundary_in": s.get("boundary_in")}
             for s in scenes

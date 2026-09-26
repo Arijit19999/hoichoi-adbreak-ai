@@ -122,9 +122,10 @@ class FitResult(BaseModel):
     fits: list[BrandFit]
 
 
-FIT_SYSTEM = """You place ads in Bengali TV dramas. Score how well each brand fits a commercial break that comes
-right after the given scene. The scene's DOMINANT activity decides the fit: a context that only appears
-briefly or in the background counts for little. Score 0-10 per brand, using only the brand data given."""
+FIT_SYSTEM = """You place ads in Bengali TV shows. Score how well each brand fits a commercial break placed between
+scene BEFORE and scene AFTER. Scene BEFORE decides the fit: its DOMINANT activity matters most, and a context that
+only appears briefly or in the background counts for little. Scene AFTER counts only when scene BEFORE is
+neutral (titles, credits, establishing shots). Score 0-10 per brand, using only the brand data given."""
 
 
 def _overlap(scene: dict, brand: dict) -> float:
@@ -134,14 +135,16 @@ def _overlap(scene: dict, brand: dict) -> float:
     return min(1.0, hits / 2)
 
 
-def score_fit(before: dict, brands: list[dict]) -> tuple[list[dict], str]:
+def score_fit(before: dict, after: dict, brands: list[dict]) -> tuple[list[dict], str]:
     if not brands:
         return [], "none"
     brand_lines = "\n".join(
         f"- {b['brand_id']} ({b['display_name']}, {b['category']}): fits {b['target_contexts']}" for b in brands)
+    after_brief = "(the same scene continues)" if after is before else _scene_brief(after)
     try:
-        result, model = llm.text_json(f"Scene:\n{_scene_brief(before)}\n\nBrands:\n{brand_lines}",
-                                      FitResult, system=FIT_SYSTEM)
+        result, model = llm.text_json(
+            f"Scene BEFORE:\n{_scene_brief(before)}\n\nScene AFTER:\n{after_brief}\n\nBrands:\n{brand_lines}",
+            FitResult, system=FIT_SYSTEM)
         llm_fit = {f.brand_id: f for f in result.fits}
     except Exception as e:  # noqa: BLE001 - fall back to the deterministic overlap score
         log.warning("fit scoring failed: %s", e)

@@ -84,10 +84,12 @@ def run_pipeline(src: Path, force: bool = False, replan: bool = False,
         progress("scenes", "segmenting and analysing scenes")
         started = time.perf_counter()
         negative, target = brands.vocabulary(brands.load_catalogue())
-        result = scenes.analyse(remote, work / "video.mp4", info, negative, target)
+        result = scenes.analyse(remote, work / "video.mp4", info, negative, target,
+                                gaps=read_json(speech_path)["gaps"])
         write_json(scenes_path, result)
         models = sorted({m for s in result["scenes"] for m in s.get("models", [])})
-        progress("scenes", f"{len(result['scenes'])} scenes from {len(result['windows'])} windows "
+        progress("scenes", f"{len(result['scenes'])} scenes, {sum(len(s['beats']) for s in result['scenes'])} "
+                           f"in-scene beats from {len(result['windows'])} windows "
                            f"via {models} ({time.perf_counter() - started:.0f}s)")
 
     if replan or not (work / "breaks.json").exists():

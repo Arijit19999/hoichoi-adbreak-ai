@@ -31,6 +31,11 @@ PARALLEL_CALLS = 3
 
 VERDICT_RANK = {"absent": 0, "possible": 1, "present": 2}
 
+BEAT_EDGE_S = 20.0           # beats this close to a scene boundary are redundant
+LONG_SCENE_S = 360.0         # scenes longer than this with no AI beats get silence-based pause points
+PAUSE_MIN_GAP_S = 1.2
+PAUSES_PER_LONG_SCENE = 4
+
 
 class ContextVerdict(BaseModel):
     context: str
@@ -41,6 +46,12 @@ class ContextVerdict(BaseModel):
 class Activity(BaseModel):
     activity: str
     share: float = Field(ge=0, le=1, description="fraction of the scene's screen time")
+
+
+class Beat(BaseModel):
+    timestamp: str = Field(description="MM:SS from the start of THIS clip")
+    description: str
+    strength: float = Field(ge=0, le=1, description="1 = an obvious, satisfying pause point")
 
 
 class WindowScene(BaseModel):
@@ -67,6 +78,9 @@ class WindowScene(BaseModel):
     interruptibility: int = Field(ge=0, le=10, description="10 = perfectly natural to cut to a commercial break "
                                                            "right after this scene ends")
     ending_note: str
+    beats: list[Beat] = Field(description="moments INSIDE this scene where the action clearly wraps up and a "
+                                          "commercial break would feel natural (a round / dish / topic / "
+                                          "conversation ends); empty if none")
 
 
 class WindowAnalysis(BaseModel):
@@ -80,6 +94,9 @@ A scene is one continuous dramatic unit: same location, continuous time, same co
 starts when the location changes, time jumps, or a clearly new dramatic unit begins. NOT scene changes:
 camera angle changes, close-ups, reaction shots, brief cutaways, or cross-cutting between the two sides of
 one phone call. Title sequences, credits and recaps are scenes of their own. Timestamps must be precise.
+The video may also be non-fiction (cooking, game, travel or talk show): there, each new segment (a new round,
+dish, guest, topic or location) is a new scene. Inside long scenes, also mark "beats": moments where a piece of
+action clearly wraps up (a round or dish is finished, a conversation concludes) so a break would feel natural.
 
 Negative-context checks protect viewers and advertisers. Mark a context "present" if it is shown OR clearly
 referred to (characters talking about a death counts as grief), "possible" if there are hints, and "absent"
@@ -158,7 +175,12 @@ def _analyse_window(remote: types.File, start: float, end: float, negative: list
             if context not in checked:
                 data["negative_context_checks"].append(
                     {"context": context, "verdict": "possible", "evidence": "not answered by model"})
-        scenes.append({**data, "abs_start": start + rel_start, "abs_end": start + min(rel_end, length),
+        beats = []
+        for beat in data.pop("beats", []):
+            rel = _mmss_to_s(beat["timestamp"])
+            if rel is not None and rel_start + 5 < rel - shift < rel_end - 5:
+                beats.append({**beat, "time": start + rel - shift})
+        scenes.append({**data, "beats": beats, "abs_start": start + rel_start, "abs_end": start + min(rel_end, length),
                        "window": [start, end], "model": model})
     return scenes
 
@@ -221,7 +243,8 @@ def _combine(scene: dict, window_scenes: list[dict]) -> dict:
     }
 
 
-def analyse(remote: types.File, video: Path, info: MediaInfo, negative: list[str], target: list[str]) -> dict:
+def analyse(remote: types.File, video: Path, info: MediaInfo, negative: list[str], target: list[str],
+            gaps: list[list[float]] | None = None) -> dict:
     duration = info.duration
     windows = _windows(duration)
     with ThreadPoolExecutor(PARALLEL_CALLS) as pool:
@@ -252,6 +275,7 @@ def analyse(remote: types.File, video: Path, info: MediaInfo, negative: list[str
                   "boundary_in": boundaries[i - 1] if i > 0 else None}, window_scenes)
         for i in range(len(edges) - 1)
     ]
+    _attach_beats(scenes, window_scenes, video, info, gaps or [])
     return {
         "windows": windows,
         "negative_vocabulary": negative,
@@ -259,3 +283,46 @@ def analyse(remote: types.File, video: Path, info: MediaInfo, negative: list[str
         "window_scenes": window_scenes,
         "scenes": scenes,
     }
+
+
+def _attach_beats(scenes: list[dict], window_scenes: list[dict], video: Path, info: MediaInfo,
+                  gaps: list[list[float]]) -> None:
+    """Pause points inside scenes: AI-marked beats, or long silences on a cut for long beat-less scenes.
+
+    Long continuous formats (cooking / game / talk shows) can run 10+ minutes without a scene change;
+    these give the break planner somewhere natural to cut.
+    """
+    proposals = sorted((b for ws in window_scenes for b in ws.get("beats", [])), key=lambda b: b["time"])
+    merged: list[dict] = []
+    for b in proposals:
+        if merged and b["time"] - merged[-1]["time"] < MERGE_S:
+            if b["strength"] > merged[-1]["strength"]:
+                merged[-1] = b
+            continue
+        merged.append(b)
+
+    for scene in scenes:
+        scene["beats"] = []
+    for b in merged:
+        cut = find_cut_near(video, b["time"], info, window=3.0)
+        if cut is None:
+            continue
+        scene = next((s for s in scenes if s["start"] + BEAT_EDGE_S < cut.time < s["end"] - BEAT_EDGE_S), None)
+        if scene is not None:
+            scene["beats"].append({"time": cut.time, "proposed_time": round(b["time"], 2), "cut": cut.to_dict(),
+                                   "strength": b["strength"], "description": b["description"], "source": "ai"})
+
+    for scene in scenes:
+        if scene["beats"] or scene["end"] - scene["start"] < LONG_SCENE_S:
+            continue
+        inside = [g for g in gaps if scene["start"] + 30 < g[0] and g[1] < scene["end"] - 30
+                  and g[1] - g[0] >= PAUSE_MIN_GAP_S]
+        for g_start, g_end in sorted(inside, key=lambda g: g[1] - g[0], reverse=True)[:PAUSES_PER_LONG_SCENE]:
+            mid = (g_start + g_end) / 2
+            cut = find_cut_near(video, mid, info, window=min(2.5, (g_end - g_start) / 2))
+            if cut and g_start + 0.4 <= cut.time <= g_end - 0.15:
+                scene["beats"].append({"time": cut.time, "proposed_time": round(mid, 2), "cut": cut.to_dict(),
+                                       "strength": round(min(0.6, (g_end - g_start) / 5), 2),
+                                       "description": f"{g_end - g_start:.1f}s pause in dialogue on a shot change",
+                                       "source": "silence"})
+        scene["beats"].sort(key=lambda b: b["time"])

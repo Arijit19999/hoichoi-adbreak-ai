@@ -27,7 +27,9 @@ export function BreakCard({ c, scenes, onWatch }: { c: Candidate; scenes: DebugS
     <div className="rounded-xl bg-zinc-900 p-4 ring-1 ring-white/10">
       <div className="flex flex-wrap items-center justify-between gap-2">
         <div>
-          <div className="text-xs uppercase tracking-wide text-amber-400">{p.id} · {fmtTime(c.time, true)}</div>
+          <div className="text-xs uppercase tracking-wide text-amber-400">
+            {p.id} · {fmtTime(c.time, true)} · {c.kind.replace("_", " ")}
+          </div>
           <div className="text-lg font-semibold">
             {p.display_name} <span className="text-sm font-normal text-zinc-400">· {p.category} · {p.creative.duration_sec}s</span>
           </div>
@@ -114,6 +116,7 @@ export function CandidatesTable({ candidates, onWatch }: { candidates: Candidate
                 <button className="text-sky-300 hover:underline" onClick={() => onWatch(Math.max(0, c.time - 6))}>
                   {fmtTime(c.time, true)}
                 </button>
+                <div className="text-[10px] text-zinc-500">{c.kind.replace("_", " ")}</div>
               </td>
               <td className="px-3 py-1.5">{c.score?.toFixed(2) ?? "–"}</td>
               <td className="px-3 py-1.5">{c.selection_score?.toFixed(2) ?? "–"}</td>

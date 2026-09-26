@@ -57,11 +57,13 @@ export type DebugScene = {
   target_contexts_present: string[];
   models?: string[];
   flagged_contexts: ContextCheck[];
+  beats?: { time: number; strength: number; description: string; source: string }[];
   boundary_in: { time: number; proposed_time: number; cut: { kind: string } | null; confidence: number } | null;
 };
 
 export type Candidate = {
   time: number;
+  kind: string;
   scene_before: number;
   scene_after: number;
   rejected: string[];

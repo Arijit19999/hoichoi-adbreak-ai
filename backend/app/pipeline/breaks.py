@@ -84,47 +84,68 @@ def _loudness_dip(loudness: dict, t: float) -> float:
     return float(np.clip((np.median(values) - local) / 12.0, 0, 1))
 
 
+def _evaluate(cand: dict, cut: dict | None, speech: dict, wav: Path, use_asr: bool,
+              judgement: dict[str, float]) -> None:
+    """Apply the hard gates, then score. `judgement` holds the AI features (0-1) for this point."""
+    t = cand["time"]
+    if not cut:
+        cand["rejected"].append("no clean shot change at this boundary")
+        return
+    cand["transition"] = cut["kind"]
+
+    last_end, next_start, crossing = _speech_around(speech["speech"], t)
+    cand["silence_before"] = round(t - last_end, 2)
+    cand["silence_after"] = round(next_start - t, 2) if next_start != float("inf") else None
+    if crossing:
+        cand["rejected"].append(f"speech too close to the cut (VAD): speech {crossing[0] - t:+.2f}s to "
+                                f"{crossing[1] - t:+.2f}s around it (needs {PRE_SILENCE_S}s before, "
+                                f"{POST_SILENCE_S}s after)")
+        return
+
+    if use_asr:
+        crossing, note = _asr_speech_at_cut(wav, t)
+        cand["notes"].append(f"ASR: {note}")
+        if crossing:
+            cand["rejected"].append(f"speech across the cut (ASR): {note}")
+            return
+
+    features = {
+        **judgement,
+        "transition": TRANSITION_SCORE.get(cut["kind"], 0.5),
+        "silence_before": min(t - last_end, 2.0) / 2.0,
+        "silence_after": min(next_start - t, 1.0),
+        "loudness_dip": _loudness_dip(speech["loudness_db"], t),
+    }
+    cand["features"] = {k: round(v, 3) for k, v in features.items()}
+    cand["score"] = round(sum(WEIGHTS[k] * v for k, v in features.items()), 3)
+
+
 def candidates(scenes: list[dict], speech: dict, wav: Path, use_asr: bool = True) -> list[dict]:
+    """Scene boundaries plus in-scene beats (natural pauses inside long scenes)."""
     out = []
     for prev, nxt in zip(scenes, scenes[1:]):
-        t, boundary = nxt["start"], nxt["boundary_in"]
-        cand = {"time": t, "scene_before": prev["index"], "scene_after": nxt["index"], "rejected": [], "notes": []}
+        boundary = nxt["boundary_in"] or {}
+        cand = {"time": nxt["start"], "kind": "scene_boundary", "scene_before": prev["index"],
+                "scene_after": nxt["index"], "rejected": [], "notes": []}
         out.append(cand)
-
-        cut = boundary.get("cut") if boundary else None
-        if not cut:
-            cand["rejected"].append("no clean shot change at this boundary")
-            continue
-        cand["transition"] = cut["kind"]
-
-        last_end, next_start, crossing = _speech_around(speech["speech"], t)
-        cand["silence_before"] = round(t - last_end, 2)
-        cand["silence_after"] = round(next_start - t, 2) if next_start != float("inf") else None
-        if crossing:
-            cand["rejected"].append(f"speech too close to the cut (VAD): speech {crossing[0] - t:+.2f}s to "
-                                    f"{crossing[1] - t:+.2f}s around it (needs {PRE_SILENCE_S}s before, "
-                                    f"{POST_SILENCE_S}s after)")
-            continue
-
-        if use_asr:
-            crossing, note = _asr_speech_at_cut(wav, t)
-            cand["notes"].append(f"ASR: {note}")
-            if crossing:
-                cand["rejected"].append(f"speech across the cut (ASR): {note}")
-                continue
-
-        features = {
+        _evaluate(cand, boundary.get("cut"), speech, wav, use_asr, {
             "interruptibility": prev["interruptibility"] / 10,
             "ending": ENDING_SCORE.get(prev["ending"], 0.0),
-            "transition": TRANSITION_SCORE.get(cut["kind"], 0.5),
-            "silence_before": min(t - last_end, 2.0) / 2.0,
-            "silence_after": min(next_start - t, 1.0),
-            "loudness_dip": _loudness_dip(speech["loudness_db"], t),
             "boundary_confidence": boundary.get("confidence", 0.5),
-        }
-        cand["features"] = {k: round(v, 3) for k, v in features.items()}
-        cand["score"] = round(sum(WEIGHTS[k] * v for k, v in features.items()), 3)
-    return out
+        })
+
+    for scene in scenes:
+        for beat in scene.get("beats", []):
+            # Same scene on both sides: its negative contexts apply before and after the break.
+            cand = {"time": beat["time"], "kind": f"beat ({beat['source']})", "scene_before": scene["index"],
+                    "scene_after": scene["index"], "rejected": [], "notes": [f"beat: {beat['description']}"]}
+            out.append(cand)
+            _evaluate(cand, beat["cut"], speech, wav, use_asr, {
+                "interruptibility": beat["strength"],
+                "ending": beat["strength"],
+                "boundary_confidence": beat["strength"],
+            })
+    return sorted(out, key=lambda c: c["time"])
 
 
 def position_problem(c: dict, duration: float, rules: PacingRules) -> str | None:
