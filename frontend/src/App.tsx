@@ -146,6 +146,8 @@ export default function App() {
     const firstPoll = jobsRef.current === null;
     jobsRef.current = list;
     setJobs(list);
+    // Keep the library in step with the jobs (a job may finish while this page is not looking).
+    if (list.length) refreshVideos();
     for (const j of list) {
       if (j.status === "done" && !seenDone.current.has(j.id)) {
         seenDone.current.add(j.id);
