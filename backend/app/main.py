@@ -13,7 +13,7 @@ from pydantic import BaseModel, Field
 
 from . import ads, brands, jobs
 from .config import REPO_ROOT, get_settings
-from .pipeline import breaks, run, vmap
+from .pipeline import breaks, vmap
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(levelname)s %(message)s", datefmt="%H:%M:%S")
 logging.getLogger("httpx").setLevel(logging.WARNING)
@@ -62,8 +62,7 @@ def get_job(job_id: str):
 def _process(src: Path, label: str, cleanup: bool) -> jobs.Job:
     def work(job: jobs.Job) -> str:
         try:
-            result = run.run_pipeline(src, progress=jobs.progress_for(job), source_name=label)
-            return result.name
+            return jobs.run_cli(job, [str(src), "--source-name", label])
         finally:
             if cleanup:
                 src.unlink(missing_ok=True)
@@ -142,7 +141,7 @@ def _submit_url(url: str) -> jobs.Job:
                             out.write(chunk)
                 name = Path(body.url.split("?")[0]).name or None
             progress("download", f"{name or 'video'}: {dst.stat().st_size / 1e6:.0f} MB")
-            video_id = run.run_pipeline(dst, progress=progress, source_name=name).name
+            video_id = jobs.run_cli(job, [str(dst), *(["--source-name", name] if name else [])])
             URL_INDEX.write_text(json.dumps({**_url_index(), body.url: video_id}), encoding="utf-8")
             return video_id
         finally:
@@ -237,8 +236,7 @@ def replan(video_id: str, rules: RulesIn | None = None):
     pacing = breaks.PacingRules(**(rules.model_dump() if rules else {}))
 
     def job_fn(job: jobs.Job) -> str:
-        run.make_plan(work, jobs.progress_for(job), rules=pacing)
-        return video_id
+        return jobs.run_cli(job, ["--work", str(work), "--rules", json.dumps(pacing.to_dict())])
 
     job = jobs.submit("replan", video_id, job_fn)
     job.video_id = video_id

@@ -17,7 +17,11 @@ WORKDIR /app
 ENV UV_COMPILE_BYTECODE=1 \
     UV_LINK_MODE=copy \
     PYTHONUNBUFFERED=1 \
-    OUTPUT_DIR=/tmp/outputs
+    OUTPUT_DIR=/tmp/outputs \
+    OMP_NUM_THREADS=1 \
+    OPENBLAS_NUM_THREADS=1 \
+    MKL_NUM_THREADS=1 \
+    MALLOC_ARENA_MAX=2
 
 COPY backend/pyproject.toml backend/uv.lock backend/.python-version ./backend/
 RUN cd backend && uv sync --frozen --no-dev

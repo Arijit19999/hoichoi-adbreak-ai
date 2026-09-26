@@ -11,6 +11,7 @@ AUDIT_TOP_N = 3            # brands tried per break before the break is dropped
 DIVERSITY_MARGIN = 0.10    # accept the runner-up brand this close to avoid back-to-back repeats
 FIT_IN_SELECTION = 0.30    # weight of the best safe brand's fit when choosing between break points
 MAX_REPLANS = 6
+MIN_BRAND_FIT = 0.20       # below this no brand is contextually appropriate: the break is not placed
 
 
 def _assign(chosen: list[dict], scenes: list[dict], by_id: dict[str, dict], rules: breaks.PacingRules,
@@ -29,14 +30,22 @@ def _assign(chosen: list[dict], scenes: list[dict], by_id: dict[str, dict], rule
         before, after = scenes[c["scene_before"]], scenes[c["scene_after"]]
         ranking = c["brand_ranking"]
 
-        order = [r["brand_id"] for r in ranking]
+        order = [r["brand_id"] for r in ranking if r["fit"] >= MIN_BRAND_FIT]
         if len(ranking) > 1 and order[0] == previous_brand and ranking[1]["fit"] >= ranking[0]["fit"] - DIVERSITY_MARGIN:
             order[0], order[1] = order[1], order[0]
             c["notes"].append(f"runner-up chosen to avoid repeating {previous_brand} back to back")
 
         per_break_budget = budget_left / (len(chosen) - n)
+        flagged: dict[str, str] = {}   # context the auditor found next to this break -> brand it was raised for
         for brand_id in order[:AUDIT_TOP_N]:
             brand = by_id[brand_id]
+            # An audit objection is evidence about the scene: it rules out every brand that shares the context.
+            shared = next((ctx for ctx in brand["negative_contexts"] if ctx in flagged), None)
+            if shared:
+                c["audits"].append({"brand_id": brand_id, "model": "rule", "verdict": "violation",
+                                    "violated_context": shared,
+                                    "reason": f"auditor found '{shared}' next to this break (raised for {flagged[shared]})"})
+                continue
             creative = matching.pick_creative(brand, per_break_budget) or matching.pick_creative(brand, budget_left)
             if creative is None:
                 c["notes"].append(f"{brand_id}: no creative fits the remaining ad-load budget ({budget_left:.0f}s)")
@@ -47,6 +56,10 @@ def _assign(chosen: list[dict], scenes: list[dict], by_id: dict[str, dict], rule
                 audit_cache[key] = {"brand_id": brand_id, "model": audit_model, **result.model_dump()}
             c["audits"].append(audit_cache[key])
             if audit_cache[key]["verdict"] != "safe":
+                ctx = (audit_cache[key].get("violated_context") or "").lower().strip()
+                for known in brand["negative_contexts"]:
+                    if known in ctx or (ctx and ctx in known):
+                        flagged.setdefault(known, brand_id)
                 continue
             fit = next(r for r in ranking if r["brand_id"] == brand_id)
             c["placement"] = {"brand_id": brand_id, "display_name": brand["display_name"],
@@ -86,6 +99,8 @@ def build_plan(work: Path, scenes_doc: dict, speech_doc: dict, duration: float, 
         c["brand_ranking"], c["fit_model"] = matching.score_fit(scenes[c["scene_before"]], scenes[c["scene_after"]], safe)
         c["best_fit"] = c["brand_ranking"][0]["fit"]
         c["selection_score"] = round(c["score"] + FIT_IN_SELECTION * c["best_fit"], 3)
+        if c["best_fit"] < MIN_BRAND_FIT:
+            c["rejected"].append(f"no safe brand fits this moment (best fit {c['best_fit']:.2f} < {MIN_BRAND_FIT})")
 
     # Select, assign brands, audit. An audit failure removes that break and the selection is re-run,
     # so another eligible break can take its place.

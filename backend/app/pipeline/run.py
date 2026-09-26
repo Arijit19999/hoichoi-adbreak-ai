@@ -60,7 +60,8 @@ def ingest(src: Path, progress: Progress = _print_progress, source_name: str | N
 
 
 def run_pipeline(src: Path, force: bool = False, replan: bool = False, rebuild_scenes: bool = False,
-                 progress: Progress = _print_progress, source_name: str | None = None) -> Path:
+                 progress: Progress = _print_progress, source_name: str | None = None,
+                 rules: breaks.PacingRules | None = None) -> Path:
     if force:
         work = get_settings().outputs / media.content_hash(src)[:16]
         shutil.rmtree(work, ignore_errors=True)
@@ -108,7 +109,7 @@ def run_pipeline(src: Path, force: bool = False, replan: bool = False, rebuild_s
                            f"via {models} ({time.perf_counter() - started:.0f}s)")
 
     if replan or not (work / "breaks.json").exists():
-        make_plan(work, progress)
+        make_plan(work, progress, rules=rules)
 
     progress("done", str(work))
     return work
@@ -135,7 +136,10 @@ def make_plan(work: Path, progress: Progress = _print_progress, rules: breaks.Pa
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Run the ad-break pipeline on one video")
-    parser.add_argument("video", type=Path)
+    parser.add_argument("video", type=Path, nargs="?")
+    parser.add_argument("--work", type=Path, help="re-plan an already analysed video directory (no source needed)")
+    parser.add_argument("--source-name", help="original file name to record")
+    parser.add_argument("--rules", help="pacing rules as JSON")
     parser.add_argument("--force", action="store_true", help="discard cached results for this video")
     parser.add_argument("--replan", action="store_true", help="recompute breaks / brands / manifest only")
     parser.add_argument("--rebuild-scenes", action="store_true",
@@ -145,7 +149,15 @@ def main() -> None:
                         datefmt="%H:%M:%S")
     logging.getLogger("httpx").setLevel(logging.WARNING)
     logging.getLogger("google_genai").setLevel(logging.WARNING)
-    run_pipeline(args.video.resolve(), force=args.force, replan=args.replan, rebuild_scenes=args.rebuild_scenes)
+    rules = breaks.PacingRules(**json.loads(args.rules)) if args.rules else None
+    if args.work:
+        make_plan(args.work.resolve(), rules=rules)
+        _print_progress("done", str(args.work.resolve()))
+    elif args.video:
+        run_pipeline(args.video.resolve(), force=args.force, replan=args.replan, rebuild_scenes=args.rebuild_scenes,
+                     source_name=args.source_name, rules=rules)
+    else:
+        parser.error("give a video file or --work")
 
 
 if __name__ == "__main__":

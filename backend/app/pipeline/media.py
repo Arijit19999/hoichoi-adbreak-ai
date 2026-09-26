@@ -25,6 +25,9 @@ def _bin(name: str) -> str:
 
 
 def _run(cmd: list[str]) -> bytes:
+    if Path(cmd[0]).stem == "ffmpeg":
+        # Containers report the host's core count; unbounded threads mean unbounded frame buffers.
+        cmd = [cmd[0], "-threads", "2", *cmd[1:]]
     proc = subprocess.run(cmd, capture_output=True)
     if proc.returncode != 0:
         err = proc.stderr.decode("utf-8", "replace")[-2000:]
