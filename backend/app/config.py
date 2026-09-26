@@ -22,6 +22,9 @@ class Settings(BaseSettings):
     # >0: upload a small proxy (this height, 5 fps) to Gemini instead of the original.
     # Useful on slow uplinks; leave 0 on a small server (transcoding is CPU-heavy).
     gemini_proxy_height: int = 0
+    # Comma-separated video links processed in the background at startup when not already processed.
+    # Demo convenience for hosts with an ephemeral disk; results still come from the full pipeline.
+    seed_video_urls: str = ""
     brands_path: Path = Path("data/brands/brands.json")
 
     def resolve(self, p: Path) -> Path:

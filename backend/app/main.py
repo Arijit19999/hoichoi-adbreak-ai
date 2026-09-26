@@ -108,8 +108,23 @@ class UrlIn(BaseModel):
     url: str
 
 
+URL_INDEX = OUTPUTS / "_urls.json"   # link -> video_id of links already processed on this disk
+
+
+def _url_index() -> dict[str, str]:
+    try:
+        return json.loads(URL_INDEX.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+
+
 @app.post("/api/videos/from-url")
 def video_from_url(body: UrlIn):
+    return _submit_url(body.url).to_dict()
+
+
+def _submit_url(url: str) -> jobs.Job:
+    body = UrlIn(url=url)
     UPLOADS.mkdir(parents=True, exist_ok=True)
     dst = UPLOADS / f"{uuid.uuid4().hex}.mp4"
 
@@ -127,11 +142,22 @@ def video_from_url(body: UrlIn):
                             out.write(chunk)
                 name = Path(body.url.split("?")[0]).name or None
             progress("download", f"{name or 'video'}: {dst.stat().st_size / 1e6:.0f} MB")
-            return run.run_pipeline(dst, progress=progress, source_name=name).name
+            video_id = run.run_pipeline(dst, progress=progress, source_name=name).name
+            URL_INDEX.write_text(json.dumps({**_url_index(), body.url: video_id}), encoding="utf-8")
+            return video_id
         finally:
             dst.unlink(missing_ok=True)
 
-    return jobs.submit("process", body.url, work).to_dict()
+    return jobs.submit("process", body.url, work)
+
+
+@app.on_event("startup")
+def _seed_videos() -> None:
+    """Re-process configured demo videos that this (possibly fresh) disk does not have yet."""
+    done = _url_index()
+    for url in (u.strip() for u in settings.seed_video_urls.split(",")):
+        if url and not (url in done and (OUTPUTS / done[url] / "breaks.json").exists()):
+            _submit_url(url)
 
 
 @app.get("/api/videos")

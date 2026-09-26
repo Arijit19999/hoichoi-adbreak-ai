@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { api, fmtTime, parseVmap, type Debug, type Job, type Rules, type VideoDetail, type VideoSummary, type VmapBreak } from "./api";
+import { api, fmtTime, parseVmap, type Brand, type Debug, type Job, type Rules, type VideoDetail, type VideoSummary, type VmapBreak } from "./api";
 import { BreakCard, CandidatesTable, ScenesTable } from "./components/Details";
 import { BrandsPanel, RulesPanel } from "./components/Panels";
 import { Player, type PlayerHandle } from "./components/Player";
@@ -121,6 +121,7 @@ export default function App() {
   const [debug, setDebug] = useState<Debug | null>(null);
   const [vmapBreaks, setVmapBreaks] = useState<VmapBreak[]>([]);
   const [defaultRules, setDefaultRules] = useState<Rules | null>(null);
+  const [brands, setBrands] = useState<Brand[]>([]);
   const [tab, setTab] = useState<Tab>("breaks");
   const [current, setCurrent] = useState(0);
   const [reloadKey, setReloadKey] = useState(0);
@@ -182,6 +183,7 @@ export default function App() {
     api.video(selected).then(setDetail).catch(() => setDetail(null));
     api.debug(selected).then(setDebug).catch(() => setDebug(null));
     api.manifest(selected).then((xml) => setVmapBreaks(parseVmap(xml))).catch(() => setVmapBreaks([]));
+    api.brands().then(setBrands).catch(() => setBrands([]));
   }, [selected, reloadKey]);
 
   const placed = useMemo(() => debug?.candidates.filter((c) => c.placement) ?? [], [debug]);
@@ -239,6 +241,7 @@ export default function App() {
                 scenes={debug.scenes}
                 candidates={debug.candidates}
                 breaks={debug.plan.breaks}
+                brands={brands}
                 current={current}
                 onSeek={watch}
               />

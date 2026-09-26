@@ -21,3 +21,7 @@ services:
         value: gemini-flash-lite-latest
       - key: OUTPUT_DIR
         value: /tmp/outputs
+      # sample episodes from the problem statement (mohanagar, feluda, bhojon_bilashi, money_honey,
+      # indubala_bhaater_hotel, mandaar), re-processed in the background after each restart
+      - key: SEED_VIDEO_URLS
+        value: "https://drive.google.com/file/d/1euta8ouTGPHFnWGEFw7ZdemUIo5PjyjI/view,https://drive.google.com/file/d/1dyRiN464U6OeTiC5lij7WJtnxlXDJBi_/view,https://drive.google.com/file/d/1E7VuKgpNvoDXW7L2jzgKJKgJ92JatNu-/view,https://drive.google.com/file/d/1gBjeVEVZ0NDTivNwcjiyz9NlPQiojXKv/view,https://drive.google.com/file/d/1l9B4leJ9p3UYkACvevIgdAjOlUYW5fhw/view,https://drive.google.com/file/d/1W1xOslyrfHm0NMon4nJ9b4SrPf6Um-l8/view"

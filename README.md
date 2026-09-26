@@ -117,8 +117,10 @@ original (4-5x smaller).
 ## Deploy
 
 `render.yaml` + `Dockerfile` (single container: React build served by FastAPI). Set `GEMINI_API_KEY` and
-`GROQ_API_KEY` as secrets. The free instance has an ephemeral disk, so processed results disappear on restart and
-need re-processing.
+`GROQ_API_KEY` as secrets. The free instance has an ephemeral disk, so processed results disappear on restart:
+`SEED_VIDEO_URLS` (comma-separated links) are re-processed in the background by the full pipeline after each start,
+one at a time, and skipped when already present. An external uptime ping on `/api/health` keeps the free instance
+from sleeping.
 
 ## Known limitations
 
