@@ -216,3 +216,11 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+
+.env
+data/samples/
+data/creatives/*.mp4
+outputs/
+node_modules/
+frontend/dist/
