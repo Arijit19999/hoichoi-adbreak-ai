@@ -18,9 +18,10 @@ from .speech import wav_clip
 
 log = logging.getLogger("breaks")
 
-PRE_SILENCE_S = 0.4      # no speech in the last 0.4 s before the cut
-POST_SILENCE_S = 0.15    # ... nor starting within 0.15 s after it
+PRE_SILENCE_S = 0.15     # the last line must have finished before the cut (VAD already pads speech by 80 ms)
+POST_SILENCE_S = 0.0     # the next scene's first line may start right at the cut, but not before it
 ASR_LOOKBACK_S = 8.0
+MAX_WORD_S = 1.5
 
 ENDING_SCORE = {"resolved": 1.0, "cliffhanger": 0.75, "open": 0.6, "mid_action": 0.0}
 TRANSITION_SCORE = {"fade_black": 1.0, "hard_cut": 0.6}
@@ -65,7 +66,8 @@ def _asr_speech_at_cut(wav: Path, t: float) -> tuple[bool | None, str]:
     result = llm.transcribe(wav_clip(wav, start, t + 1.0))
     if result is None:
         return None, "asr unavailable"
-    words = result.get("words") or []
+    # Whisper sometimes emits one multi-second "word" over music or silence; no real word is that long.
+    words = [w for w in result.get("words") or [] if w["end"] - w["start"] <= MAX_WORD_S]
     for w in words:
         w_start, w_end = start + w["start"], start + w["end"]
         if w_start < t + POST_SILENCE_S and w_end > t - PRE_SILENCE_S / 2:

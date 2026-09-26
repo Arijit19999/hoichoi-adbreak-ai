@@ -36,7 +36,7 @@ def read_json(path: Path) -> dict:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
-def ingest(src: Path, progress: Progress = _print_progress) -> Path:
+def ingest(src: Path, progress: Progress = _print_progress, source_name: str | None = None) -> Path:
     """Hash + probe the upload and create the per-video work dir with playback copy and audio."""
     progress("ingest", f"hashing {src.name}")
     video_id = media.content_hash(src)[:16]
@@ -48,7 +48,7 @@ def ingest(src: Path, progress: Progress = _print_progress) -> Path:
         info = media.probe(src)
         if info.audio_codec is None:
             raise ValueError("video has no audio track; dialogue-aware break placement needs audio")
-        write_json(meta_path, {"video_id": video_id, "source_name": src.name, **info.to_dict()})
+        write_json(meta_path, {"video_id": video_id, "source_name": source_name or src.name, **info.to_dict()})
 
     if not (work / "video.mp4").exists():
         progress("ingest", "preparing playback copy")
@@ -59,12 +59,12 @@ def ingest(src: Path, progress: Progress = _print_progress) -> Path:
     return work
 
 
-def run_pipeline(src: Path, force: bool = False, replan: bool = False,
-                 progress: Progress = _print_progress) -> Path:
+def run_pipeline(src: Path, force: bool = False, replan: bool = False, rebuild_scenes: bool = False,
+                 progress: Progress = _print_progress, source_name: str | None = None) -> Path:
     if force:
         work = get_settings().outputs / media.content_hash(src)[:16]
         shutil.rmtree(work, ignore_errors=True)
-    work = ingest(src, progress)
+    work = ingest(src, progress, source_name)
 
     speech_path = work / "speech.json"
     if not speech_path.exists():
@@ -76,6 +76,14 @@ def run_pipeline(src: Path, force: bool = False, replan: bool = False,
                            f"speech ratio {result['speech_ratio']:.0%} ({time.perf_counter() - started:.1f}s)")
 
     scenes_path = work / "scenes.json"
+    if rebuild_scenes and scenes_path.exists():
+        progress("scenes", "rebuilding scenes from cached model answers (no new model calls)")
+        result = scenes.build_scenes(read_json(scenes_path), work / "video.mp4", media.probe(work / "video.mp4"),
+                                     read_json(speech_path)["gaps"])
+        write_json(scenes_path, result)
+        progress("scenes", f"{len(result['scenes'])} scenes, {sum(len(s['beats']) for s in result['scenes'])} beats, "
+                           f"{len(result['dropped_boundaries'])} boundaries dropped")
+        replan = True
     if not scenes_path.exists():
         info = media.probe(work / "video.mp4")
         progress("upload", "uploading video to Gemini")
@@ -123,12 +131,14 @@ def main() -> None:
     parser.add_argument("video", type=Path)
     parser.add_argument("--force", action="store_true", help="discard cached results for this video")
     parser.add_argument("--replan", action="store_true", help="recompute breaks / brands / manifest only")
+    parser.add_argument("--rebuild-scenes", action="store_true",
+                        help="recompute scene boundaries from cached model answers, then re-plan")
     args = parser.parse_args()
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(levelname)s %(message)s",
                         datefmt="%H:%M:%S")
     logging.getLogger("httpx").setLevel(logging.WARNING)
     logging.getLogger("google_genai").setLevel(logging.WARNING)
-    run_pipeline(args.video.resolve(), force=args.force, replan=args.replan)
+    run_pipeline(args.video.resolve(), force=args.force, replan=args.replan, rebuild_scenes=args.rebuild_scenes)
 
 
 if __name__ == "__main__":

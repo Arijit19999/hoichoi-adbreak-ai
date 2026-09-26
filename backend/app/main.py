@@ -61,7 +61,7 @@ def get_job(job_id: str):
 def _process(src: Path, label: str, cleanup: bool) -> jobs.Job:
     def work(job: jobs.Job) -> str:
         try:
-            result = run.run_pipeline(src, progress=jobs.progress_for(job))
+            result = run.run_pipeline(src, progress=jobs.progress_for(job), source_name=label)
             return result.name
         finally:
             if cleanup:
@@ -85,6 +85,17 @@ async def upload_video(file: UploadFile):
     return _process(dst, file.filename or dst.name, cleanup=True).to_dict()
 
 
+def _drive_file_name(url: str) -> str | None:
+    """Best-effort original file name of a public Drive file (from its page title)."""
+    try:
+        page = httpx.get(url, follow_redirects=True, timeout=15).text
+        start = page.index("<title>") + 7
+        title = page[start:page.index("</title>", start)].rsplit(" - Google Drive", 1)[0].strip()
+        return title or None
+    except (httpx.HTTPError, ValueError):
+        return None
+
+
 class UrlIn(BaseModel):
     url: str
 
@@ -94,6 +105,8 @@ def video_from_url(body: UrlIn):
     UPLOADS.mkdir(parents=True, exist_ok=True)
     dst = UPLOADS / f"{uuid.uuid4().hex}.mp4"
 
+    original_name: dict[str, str | None] = {"name": None}
+
     def work(job: jobs.Job) -> str:
         progress = jobs.progress_for(job)
         progress("download", body.url)
@@ -102,6 +115,7 @@ def video_from_url(body: UrlIn):
                 import gdown
                 if gdown.download(body.url, str(dst), quiet=True, fuzzy=True) is None:
                     raise RuntimeError("Google Drive download failed (is the file shared publicly?)")
+                original_name["name"] = _drive_file_name(body.url)
             else:
                 with httpx.stream("GET", body.url, follow_redirects=True, timeout=60) as r:
                     r.raise_for_status()
@@ -109,7 +123,8 @@ def video_from_url(body: UrlIn):
                         for chunk in r.iter_bytes(4 * 1024 * 1024):
                             out.write(chunk)
             progress("download", f"{dst.stat().st_size / 1e6:.0f} MB")
-            return run.run_pipeline(dst, progress=progress).name
+            name = Path(body.url.split("?")[0]).name if "drive.google.com" not in body.url else None
+            return run.run_pipeline(dst, progress=progress, source_name=name or original_name.get("name")).name
         finally:
             dst.unlink(missing_ok=True)
 

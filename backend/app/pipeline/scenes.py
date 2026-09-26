@@ -25,6 +25,7 @@ OVERLAP_S = 45.0
 EDGE_MARGIN_S = 6.0      # scene starts this close to a window edge are left to the overlapping window
 MERGE_S = 6.0            # scene starts closer than this are the same boundary
 REFINE_WINDOW_S = 4.0
+WIDE_REFINE_WINDOW_S = 8.0
 MIN_SCENE_S = 12.0
 MIN_OVERLAP_S = 3.0
 PARALLEL_CALLS = 3
@@ -245,19 +246,38 @@ def _combine(scene: dict, window_scenes: list[dict]) -> dict:
 
 def analyse(remote: types.File, video: Path, info: MediaInfo, negative: list[str], target: list[str],
             gaps: list[list[float]] | None = None) -> dict:
-    duration = info.duration
-    windows = _windows(duration)
+    windows = _windows(info.duration)
     with ThreadPoolExecutor(PARALLEL_CALLS) as pool:
         per_window = list(pool.map(lambda w: _analyse_window(remote, *w, negative, target), windows))
     window_scenes = [s for chunk in per_window for s in chunk]
+    return build_scenes(
+        {"windows": windows, "negative_vocabulary": negative, "target_vocabulary": target,
+         "window_scenes": window_scenes},
+        video, info, gaps or [],
+    )
 
-    # Snap each boundary to the real frame-accurate cut.
-    boundaries = []
-    for b in _boundaries(window_scenes, duration):
-        cut = find_cut_near(video, b["time"], info, window=REFINE_WINDOW_S)
-        boundaries.append({**b, "proposed_time": round(b["time"], 2),
-                           "time": cut.time if cut else b["time"], "cut": cut.to_dict() if cut else None})
-    boundaries.sort(key=lambda b: b["time"])
+
+def _refine(video: Path, info: MediaInfo, b: dict) -> dict:
+    """Snap a proposed boundary to the real cut, widening the search once.
+
+    A boundary with no cut nearby is kept as a scene division (it still separates the contexts on
+    either side, which matters for brand safety) but can never host a break.
+    """
+    cut = find_cut_near(video, b["time"], info, window=REFINE_WINDOW_S)
+    if cut is None:
+        cut = find_cut_near(video, b["time"], info, window=WIDE_REFINE_WINDOW_S)
+    return {**b, "proposed_time": round(b["time"], 2),
+            "time": cut.time if cut else b["time"], "cut": cut.to_dict() if cut else None}
+
+
+def build_scenes(result: dict, video: Path, info: MediaInfo, gaps: list[list[float]]) -> dict:
+    """Final scenes from the per-window model answers (re-runnable from cache, no model calls)."""
+    duration = info.duration
+    window_scenes = result["window_scenes"]
+
+    boundaries = sorted((_refine(video, info, b) for b in _boundaries(window_scenes, duration)),
+                        key=lambda b: b["time"])
+    dropped = []
 
     # Drop the weakest boundary around any scene that is too short, until none are.
     while boundaries:
@@ -267,7 +287,8 @@ def analyse(remote: types.File, video: Path, info: MediaInfo, negative: list[str
             break
         i = short[0]
         candidates = [j for j in (i - 1, i) if 0 <= j < len(boundaries)]
-        boundaries.pop(min(candidates, key=lambda j: boundaries[j]["confidence"]))
+        dropped.append({**boundaries.pop(min(candidates, key=lambda j: boundaries[j]["confidence"])),
+                        "reason": f"scene shorter than {MIN_SCENE_S:.0f}s"})
 
     edges = [0.0, *[b["time"] for b in boundaries], duration]
     scenes = [
@@ -275,14 +296,8 @@ def analyse(remote: types.File, video: Path, info: MediaInfo, negative: list[str
                   "boundary_in": boundaries[i - 1] if i > 0 else None}, window_scenes)
         for i in range(len(edges) - 1)
     ]
-    _attach_beats(scenes, window_scenes, video, info, gaps or [])
-    return {
-        "windows": windows,
-        "negative_vocabulary": negative,
-        "target_vocabulary": target,
-        "window_scenes": window_scenes,
-        "scenes": scenes,
-    }
+    _attach_beats(scenes, window_scenes, video, info, gaps)
+    return {**result, "dropped_boundaries": dropped, "scenes": scenes}
 
 
 def _attach_beats(scenes: list[dict], window_scenes: list[dict], video: Path, info: MediaInfo,

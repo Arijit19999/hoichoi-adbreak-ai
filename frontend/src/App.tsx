@@ -116,7 +116,7 @@ function Sidebar({
 export default function App() {
   const [videos, setVideos] = useState<VideoSummary[]>([]);
   const [jobs, setJobs] = useState<Job[]>([]);
-  const [selected, setSelected] = useState<string | null>(null);
+  const [selected, setSelected] = useState<string | null>(() => new URLSearchParams(location.search).get("video"));
   const [detail, setDetail] = useState<VideoDetail | null>(null);
   const [debug, setDebug] = useState<Debug | null>(null);
   const [vmapBreaks, setVmapBreaks] = useState<VmapBreak[]>([]);
@@ -139,12 +139,16 @@ export default function App() {
   }, [videos, selected]);
 
   // Poll jobs; when one finishes, refresh the library and the open video.
+  const jobsRef = useRef<Job[] | null>(null);
   const pollJobs = useCallback(async () => {
     const list = await api.jobs().catch(() => [] as Job[]);
+    const firstPoll = jobsRef.current === null;
+    jobsRef.current = list;
     setJobs(list);
     for (const j of list) {
       if (j.status === "done" && !seenDone.current.has(j.id)) {
         seenDone.current.add(j.id);
+        if (firstPoll) continue; // finished before this page was opened: don't steal the selection
         await refreshVideos();
         if (j.video_id) {
           setSelected(j.video_id);
@@ -154,15 +158,26 @@ export default function App() {
     }
   }, [refreshVideos]);
 
+  // One self-rescheduling loop: fast while a job runs, slow otherwise.
   useEffect(() => {
-    pollJobs();
-    const busy = jobs.some((j) => j.status === "running" || j.status === "queued");
-    const timer = setInterval(pollJobs, busy ? 2000 : 10000);
-    return () => clearInterval(timer);
-  }, [pollJobs, jobs]);
+    let timer = 0;
+    let stopped = false;
+    const loop = async () => {
+      await pollJobs();
+      if (stopped) return;
+      const busy = (jobsRef.current ?? []).some((j) => j.status === "running" || j.status === "queued");
+      timer = window.setTimeout(loop, busy ? 2000 : 10000);
+    };
+    loop();
+    return () => {
+      stopped = true;
+      clearTimeout(timer);
+    };
+  }, [pollJobs]);
 
   useEffect(() => {
     if (!selected) return;
+    history.replaceState(null, "", `?video=${selected}`);
     setDebug(null);
     api.video(selected).then(setDetail).catch(() => setDetail(null));
     api.debug(selected).then(setDebug).catch(() => setDebug(null));
