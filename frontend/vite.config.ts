@@ -1,12 +1,12 @@
+import tailwindcss from "@tailwindcss/vite";
 import react from "@vitejs/plugin-react";
 import { defineConfig } from "vite";
 
-// https://vite.dev/config/
+const backend = "http://localhost:8000";
+
 export default defineConfig({
-  plugins: [react()],
+  plugins: [react(), tailwindcss()],
   server: {
-    proxy: {
-      "/api": "http://localhost:8000",
-    },
+    proxy: { "/api": backend, "/media": backend, "/ads": backend },
   },
 });

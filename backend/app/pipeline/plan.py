@@ -76,6 +76,9 @@ def build_plan(work: Path, scenes_doc: dict, speech_doc: dict, duration: float, 
             continue
         placed.append(c)
 
+    for i, c in enumerate(placed):
+        c["placement"]["id"] = f"midroll-{i + 1}"
+
     plan = {
         "duration": duration,
         "rules": rules.to_dict(),
